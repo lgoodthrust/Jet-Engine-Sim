@@ -56,26 +56,27 @@ class BraytonCycleEngine:
         self.air_specific_heat = 1005  # J/kg-K
         self.gas_constant = 287.05  # J/(kg·K)
         self.air_density = 1.225  # kg/m³
-        self. molar_mass_air = 0.02897  # kg/mol
+        self.molar_mass_air = 0.02897  # kg/mol
         self.gamma = 1.4  # Heat capacity ratio
 
         ### Engine Parameters ###
-        self.cross_sectional_area = 1.0  # m²
-        self.chamber_volume = 0.01  # Combustion chamber volume in m³ 0.01 = 10 liters
+        self.cross_sectional_area = 0.25 * 0.25 # m²
+        self.chamber_volume = 0.5 * 0.5 * 0.5  # Combustion chamber volume in m³ 0.01 = 10 liters
         self.combustion_efficiency = 0.95
         self.compressor_expo = 3.0
-        self.compression_ratio = 5.0
-        self.base_mass_flow_rate = 15.0  # kg/s
-        self.efficiency_compressor = 0.9
-        self.efficiency_turbine = 0.9
+        self.compressor_divider = 500
+        self.compression_ratio = 1.001
+        self.base_mass_flow_rate = 30.0  # kg/s
+        self.efficiency_compressor = 0.85
+        self.efficiency_turbine = 0.85
         self.rotor_inertia = 100
-        self.rotor_static_drag = 50.0
-        self.drag_coefficient = 0.4
-        self.k_velocity_scale = 0.01
+        self.drag_coefficient = 0.55
+        self.friction_loss = 5.0  # Arbitrary frictional resistance in Nm
+        self.k_velocity_scale = 0.05
 
         ### Starter Motor ###
-        self.starter_torque = 750.0  # Nm
-        self.starter_max_rpm = 15000  # Max starter RPM
+        self.starter_torque = 100.0  # Nm
+        self.starter_max_rpm = 3000  # Max starter RPM
 
         ### Fuel Constants ###
         self.fuel_energy_density = 43.0e6  # J/kg
@@ -99,34 +100,26 @@ class BraytonCycleEngine:
     ### 🛠 **Compressor Model (Airflow Increases with RPM)**
     def compressor(self):
         """Simulate air compression and mass flow through the engine."""
-        if self.EngineRpm < 50:  # Below 50 RPM, airflow is too weak
-            self.air_mass_flow = 0
-            return 0, self.atm_temperature
-
         T1 = self.atm_temperature
 
         T2 = T1 * (self.compression_ratio ** ((self.gamma - 1) / self.gamma))
 
         T2_real = T1 + (T2 - T1) / self.efficiency_compressor
-        self.air_mass_flow = self.base_mass_flow_rate * (self.EngineRpm / self.starter_max_rpm) ** self.compressor_expo  # Scaled mass flow
-        return T2_real
+        self.air_mass_flow = self.base_mass_flow_rate * (self.EngineRpm / self.compressor_divider) ** self.compressor_expo  # Scaled mass flow
+
+        return T2_real, T1
 
     ### 🛠 **Combustor Model (Air-Fuel Mixing & Ignition)**
     def combustor(self):
         """Burns fuel based on available air mass and throttle input, returning chamber pressure and expansion volume."""
-        if self.air_mass_flow <= 0:  # No air = no combustion
-            return self.atm_pressure, self.atm_temperature, 0.0  # No expansion
-
-        # Validate air mass flow (Change 1)
-        self.air_mass_flow = self.base_mass_flow_rate * (self.EngineRpm / self.starter_max_rpm) ** self.compressor_expo
 
         # Fuel mass flow calculation
         fuel_mass_flow = self.air_mass_flow / (self.ideal_air_fuel_ratio / (self.throttle + 1e-6))  # Avoid div by zero
 
-        # Heat added with combustion efficiency (Change 2)
+        # Heat added with combustion efficiency
         heat_added = fuel_mass_flow * self.fuel_energy_density * self.combustion_efficiency
 
-        # Calculate change in temperature and update exhaust temperature
+        # Calculate temperature increase
         delta_T = heat_added / (self.air_mass_flow * self.air_specific_heat + 1e-6)  # Avoid div by zero
         self.exhaust_temperature = delta_T + self.atm_temperature
 
@@ -137,11 +130,11 @@ class BraytonCycleEngine:
         # Calculate number of moles in the combustion chamber
         num_moles = self.air_mass_flow / self.molar_mass_air
 
-        # Calculate chamber pressure using the ideal gas law
-        self.chamber_pressure = (num_moles * self.gas_constant * self.exhaust_temperature) / self.chamber_volume
+        # **New chamber pressure equation with fuel energy contribution**
+        fuel_pressure_contribution = heat_added / self.chamber_volume  # Energy density effect
+        self.chamber_pressure = ((num_moles * self.gas_constant * self.exhaust_temperature) / self.chamber_volume) + self.atm_pressure + fuel_pressure_contribution
 
-
-        # Debugging intermediate variables (Change 5)
+        # Debugging intermediate variables
         print(f"DEBUG: air_mass_flow = {self.air_mass_flow:.6f} kg/s")
         print(f"DEBUG: fuel_mass_flow = {fuel_mass_flow:.6f} kg/s")
         print(f"DEBUG: heat_added = {heat_added:.2f} J")
@@ -152,21 +145,18 @@ class BraytonCycleEngine:
 
         return self.chamber_pressure, self.exhaust_temperature, expansion_volume
 
+
     ### 🛠 **Turbine Model (Extract Power from Exhaust)**
     def turbine(self):
-        """Extracts work from the exhaust stream to sustain rotation."""
         if self.air_mass_flow <= 0:
             return 0  # No work if there's no airflow
 
-        T4_ideal = self.exhaust_temperature * self.atm_pressure ** ((self.gamma - 1) / self.gamma)
+        T4_ideal = self.exhaust_temperature * (self.atm_pressure / self.chamber_pressure) ** ((self.gamma - 1) / self.gamma)
         T4_real = self.exhaust_temperature - (self.exhaust_temperature - T4_ideal) * self.efficiency_turbine
 
         power_extracted = self.air_mass_flow * self.air_specific_heat * (self.exhaust_temperature - T4_real)
 
-        if self.EngineRpm > 50:
-            turbine_torque = power_extracted / self.EngineRpm
-        else:
-            turbine_torque = 0
+        turbine_torque = power_extracted / (2 * np.pi * (self.EngineRpm) / 60)
 
         return turbine_torque
 
@@ -186,13 +176,15 @@ class BraytonCycleEngine:
 
         # Engine cycle sequence:
         T2 = self.compressor()
-        chamber_pressure, T3, expansion_volume = self.combustor()
+        chamber_pressure, T3, _ = self.combustor()
         turbine_torque = self.turbine()
         thrust = self.nozzle()
 
         # Compute net forces & RPM changes
         drag_force = 0.5 * self.drag_coefficient * self.air_density * self.cross_sectional_area * (self.EngineRpm * self.k_velocity_scale) ** 2
-        rpm_change = ((turbine_torque - (drag_force + self.rotor_static_drag)) / self.rotor_inertia)
+
+        # RPM Change calculation
+        rpm_change = (turbine_torque - drag_force - self.friction_loss) / self.rotor_inertia
         self.EngineRpm += rpm_change
 
         # Apply starter motor if active
@@ -202,7 +194,7 @@ class BraytonCycleEngine:
         # Prevent negative RPM
         self.EngineRpm = max(self.EngineRpm, 0)
 
-        return thrust, drag_force, chamber_pressure, expansion_volume
+        return thrust, drag_force, chamber_pressure, turbine_torque
 
 
     def toggle_starter(self):
@@ -219,7 +211,7 @@ class SliderExample(QWidget):
         self.brayton_engine = BraytonCycleEngine()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_engine)
-        self.timer.start(30)
+        self.timer.start(35)
 
     def init_ui(self):
         self.setWindowTitle("Throttle Control")
@@ -228,11 +220,11 @@ class SliderExample(QWidget):
         self.slider.setMaximum(100)
         self.slider.setValue(0)
 
-        self.label_rpm = QLabel("RPM: 0", self)
-        self.compression = QLabel("compression: 0 bar", self)
-        self.combustion = QLabel("combustion: 0 +m^3", self)
-        self.label_thrust = QLabel("Thrust: 0 N", self)
-        self.label_drag = QLabel("Drag: 0 N", self)
+        self.label_rpm = QLabel("", self)
+        self.compression = QLabel("", self)
+        self.label_thrust = QLabel("", self)
+        self.combustion = QLabel("", self)
+        self.label_drag = QLabel("", self)
         
         # Starter Button
         self.start_button = QPushButton("Start Engine")
@@ -244,8 +236,8 @@ class SliderExample(QWidget):
         layout.addWidget(self.slider)
         layout.addWidget(self.label_rpm)
         layout.addWidget(self.compression)
-        layout.addWidget(self.combustion)
         layout.addWidget(self.label_thrust)
+        layout.addWidget(self.combustion)
         layout.addWidget(self.label_drag)
         layout.addWidget(self.start_button)  # Add button to UI
         self.setLayout(layout)
@@ -258,17 +250,12 @@ class SliderExample(QWidget):
 
     def update_engine(self):
         throttle = self.slider.value() / 100.0
-        thrust, drag, chamber_pressure, expansion_volume = self.brayton_engine.update_engine(throttle)
-
-        # Debugging intermediate values
-        print(f"Exhaust Temperature: {self.brayton_engine.exhaust_temperature:.2f} K")
-        print(f"Chamber Pressure: {chamber_pressure:.4e} Pa")
-        print(f"Expansion Volume: {expansion_volume:.4f} m³")
+        thrust, drag, chamber_pressure, t_power = self.brayton_engine.update_engine(throttle)
 
         # Update GUI
-        self.label_rpm.setText(f"RPM: {self.brayton_engine.EngineRpm:.2f}")
-        self.compression.setText(f"Chamber Pressure: {chamber_pressure:.2f} Pa")
-        self.combustion.setText(f"Expansion Volume: {expansion_volume:.2f} m³")
+        self.label_rpm.setText(f"RPM: {self.brayton_engine.EngineRpm:.0f}")
+        self.compression.setText(f"Chamber Pressure: {chamber_pressure:.2e} Pa")
+        self.combustion.setText(f"turbine power: {t_power:.2f} idk")
         self.label_thrust.setText(f"Thrust: {thrust:.2f} N")
         self.label_drag.setText(f"Drag: {drag:.2f} N")
 
