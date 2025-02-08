@@ -27,7 +27,7 @@
 
 # volume
 # density = mass / volume
-
+ 
 # Isentropic Compression / Expansion (heat capacity ratio)
 # https://www.grc.nasa.gov/www/k-12/airplane/compexp.html
 
@@ -62,7 +62,7 @@ class BraytonCycleEngine:
         self.gamma = 1.4 #
        
 
-        ### engine parameters ###
+        ### engine parameters ### (engine is turbojet, single turbo impeller compressor)
         self.cross_sectional_area = 5.0 # m**2
         self.compression_ratio = 2.0
         self.base_mass_flow_rate = 10.0 # kg/s
