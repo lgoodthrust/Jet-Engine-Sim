@@ -4,10 +4,34 @@ import csv
 from PyQt5.QtWidgets import QApplication, QWidget, QSlider, QLabel, QVBoxLayout, QPushButton
 from PyQt5.QtCore import Qt, QTimer
 
-ENGINE_PATH = r"D:\code stuff\AAA\py scripts\GitHub Projects\Jet Engine Sim\K03_turbo_tester.csv"
+COMPRESSOR_PATH = r"D:\code stuff\AAA\py scripts\GitHub Projects\Jet Engine Sim\compressor_template.csv"
 
 
-def interpolate(data_points, x):
+def load_csv_data(file_path):
+    rpm = []
+    flow = []
+    pressure = []
+    drag = []
+
+    with open(file_path, 'r') as file:
+        reader = csv.reader(file)
+        next(reader)  # Skip header if present
+        
+        for row in reader:
+            if len(row) == 4:
+                continue  # Skip invalid rows
+            try:
+                rpm.append(float(row[0]))
+                flow.append(float(row[1]))
+                pressure.append(float(row[2]))
+                drag.append(float(row[3]))
+            except ValueError:
+                continue  # Skip rows with errors
+
+    return rpm, flow, pressure, drag
+
+
+def interpolate_range(data_points, x):
     data_points = sorted(data_points)
 
     for i in range(len(data_points) - 1):
@@ -26,52 +50,34 @@ def interpolate(data_points, x):
     return None
 
 
-def load_csv_data(file_path):
-    rpm = []
-    flow = []
-    pressure = []
-
-    with open(file_path, 'r') as file:
-        reader = csv.reader(file)
-        next(reader)  # Skip header if present
-        
-        for row in reader:
-            if len(row) < 3:
-                continue  # Skip incomplete rows
-            try:
-                rpm.append(float(row[0]))
-                flow.append(float(row[1]))
-                pressure.append(float(row[2]))
-            except ValueError:
-                continue  # Skip invalid rows
-
-    return rpm, flow, pressure
-
-
 class BraytonCycleEngine:
     def __init__(self):
+        ### EXPEREMENTAL ###
+        self.flow_data = list(zip(load_csv_data(COMPRESSOR_PATH)[0], load_csv_data(COMPRESSOR_PATH)[2]))  # creates list of: rpm, flow
+        self.comp_data = list(zip(load_csv_data(COMPRESSOR_PATH)[0], load_csv_data(COMPRESSOR_PATH)[2]))  # creates list of: rpm, pressure
+        self.drag_data = list(zip(load_csv_data(COMPRESSOR_PATH)[0], load_csv_data(COMPRESSOR_PATH)[2]))  # creates list of: rpm, drag
+
         ### System Constants ###
         self.atm_pressure = 101325  # Pascals (Standard atmospheric pressure)
         self.atm_temperature = 288.15  # Kelvin (15°C, standard atmosphere)
         self.air_specific_heat = 1005  # J/kg-K
-        self.gas_constant = 287.05  # J/(kg·K)
+        self.air_mol_mass = 0.02897  # Using molar mass of air
         self.air_density = 1.225  # kg/m³
+        self.gas_constant = 287.05  # J/(kg·K)
         self.gamma = 1.4  # Heat capacity ratio
 
         ### Engine Parameters ###
         self.cross_sectional_area = 0.5  # m²
         self.chamber_volume = 0.02  # m³ (approximate size for a jet engine combustor)
         self.combustion_efficiency = 0.98
-        self.compressor_expo = 2.0  # Reduced to prevent excessive airflow at low RPM
-        self.compression_ratio_base = 2.0  # Base compression ratio
-        self.compression_ratio_rpm_factor = 0.0005  # Compression ratio scaling with RPM
-        self.base_mass_flow_rate = 20.0  # kg/s
         self.efficiency_compressor = 0.85
         self.efficiency_turbine = 0.90
+        self.compression_ratio_base = 2.0  # Base compression ratio
+        self.compression_ratio_rpm_factor = 0.0005  # Compression ratio scaling with RPM
         self.rotor_inertia = 125  # Increased inertia for realistic spool-up time
         self.drag_coefficient = 0.25
         self.friction_loss = 8.0  # Nm
-        self.k_velocity_scale = 0.08
+        self.k_velocity_scale = 0.08  # idk
 
         ### Starter Motor ###
         self.starter_torque = 300.0  # Nm
@@ -83,11 +89,11 @@ class BraytonCycleEngine:
 
         ### Engine State Variables ###
         self.starter_active = False
-        self.throttle = 0.0
+        self.throttle = 0.0 # Inital throttle value
         self.EngineRpm = 0  # Initial RPM
         self.exhaust_temperature = self.atm_temperature
         self.chamber_pressure = self.atm_pressure
-        self.air_mass_flow = 0.0  # kg/s
+        self.air_mass_flow = 0.0  # Inital mass flow rate (kg/s)
 
     def starter(self):
         if self.starter_active:
@@ -103,7 +109,8 @@ class BraytonCycleEngine:
         T2 = T1 * (self.compression_ratio ** ((self.gamma - 1) / self.gamma))
         T2_real = T1 + (T2 - T1) / self.efficiency_compressor
         
-        self.air_mass_flow = self.base_mass_flow_rate * (self.EngineRpm / 10000) ** self.compressor_expo  
+        self.air_mass_flow = interpolate_range(self.comp_data, self.EngineRpm)/self.efficiency_compressor
+
         return T2_real, T1
 
     def combustor(self):
@@ -113,7 +120,7 @@ class BraytonCycleEngine:
         delta_T = heat_added / (self.air_mass_flow * self.air_specific_heat + 1e-6)
         self.exhaust_temperature = delta_T + self.atm_temperature
         
-        num_moles = self.air_mass_flow / 0.02897  # Using molar mass of air
+        num_moles = self.air_mass_flow / self.air_mol_mass
         fuel_pressure_contribution = heat_added / self.chamber_volume
         self.chamber_pressure = ((num_moles * self.gas_constant * self.exhaust_temperature) / self.chamber_volume) + self.atm_pressure + fuel_pressure_contribution
         
@@ -137,6 +144,7 @@ class BraytonCycleEngine:
 
         exit_velocity = np.sqrt(2 * self.air_specific_heat * (self.exhaust_temperature - self.atm_temperature))
         thrust = self.air_mass_flow * exit_velocity
+
         return max(thrust, 0)
 
     def update_engine(self, throttle):
@@ -146,7 +154,7 @@ class BraytonCycleEngine:
         turbine_torque = self.turbine()
         thrust = self.nozzle()
         
-        drag_force = 0.5 * self.drag_coefficient * self.air_density * self.cross_sectional_area * (self.EngineRpm * self.k_velocity_scale) ** 2
+        drag_force = interpolate_range(self.comp_data, self.EngineRpm)
         
         rpm_change = (turbine_torque - drag_force - self.friction_loss) / self.rotor_inertia
         self.EngineRpm += rpm_change
@@ -155,7 +163,8 @@ class BraytonCycleEngine:
             self.starter()
         
         self.EngineRpm = max(self.EngineRpm, 0)
-        return thrust, drag_force
+
+        return 
 
     def toggle_starter(self):
         self.starter_active = not self.starter_active
@@ -200,6 +209,7 @@ class EngineGUI(QWidget):
         self.label_thrust.setText(f"Thrust: {thrust:.2f} N")
         self.label_drag.setText(f"Drag: {drag:.2f} N")
         self.start_button.setText("Stop Starter" if self.engine.starter_active else "Start Engine")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

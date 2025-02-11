@@ -17,8 +17,8 @@ def interpolate(data_points, x):
     return None
 
 data = [(0, 0),
-        (1, 10), 
-        (2, 20), 
-        (3, 30)
+        (1000, 10), 
+        (2000, 20), 
+        (3000, 30)
         ]
-print(interpolate(data, 1.5908239287))
+print(interpolate(data, 3001))
