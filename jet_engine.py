@@ -6,9 +6,10 @@ from PyQt5.QtCore import Qt, QTimer
 #\\times10\^\{([\-, \d]*)\}
 #**$1
 
+# just clamps floats getting to large
 def lav_float(val:float):
-    MAX = 100000000.0#(sys.float_info.max- 1.0)
-    MIN = -100000000.0#(sys.float_info.min + 1.0)
+    MAX = 100000000.0  # (sys.float_info.max- 1.0)
+    MIN = -100000000.0  # (sys.float_info.min + 1.0)
     if MIN > val > MAX:
         print("CLAMPPING!")
     return max(min(MAX, val), MIN)
@@ -31,7 +32,7 @@ def drag_graph(rpm:float) -> float:
 def start_graph(rpm:float) -> float:
     rpm = lav_float(rpm)
     x = rpm
-    y=(-0.001*x)+1000
+    y=(-0.002*x)+800
     return y
  
 
@@ -48,9 +49,9 @@ class BraytonCycleEngine:
 
         ### Engine Parameters ###
         self.chamber_volume = 0.05 # m^3
-        self.efficiency_compressor = 0.90
+        self.efficiency_compressor = 0.875
         self.combustion_efficiency = 0.98
-        self.efficiency_turbine = 0.85
+        self.efficiency_turbine = 0.855
         self.rotor_inertia = 15  # rotor assembaly inertia
         self.friction_loss = 10.0  # Nm
 
@@ -73,6 +74,7 @@ class BraytonCycleEngine:
             self.EngineRpm += torque / self.rotor_inertia
         else:
             torque = 0
+        
         return torque
     
     def compressor(self):
@@ -103,9 +105,6 @@ class BraytonCycleEngine:
         # **New chamber pressure equation with fuel energy contribution**
         fuel_pressure_contribution = heat_added / self.chamber_volume  # Energy density effect
         self.chamber_pressure = ((num_moles * self.gas_constant * self.exhaust_temperature) / self.chamber_volume) + self.atm_pressure + fuel_pressure_contribution
-        
-
-        #self.chamber_pressure = comp_graph(self.EngineRpm) * (self.throttle) + self.atm_pressure
         
         return self.chamber_pressure, self.exhaust_temperature
 
