@@ -8,8 +8,8 @@ from PyQt5.QtCore import Qt, QTimer
 
 # just clamps floats getting to large
 def lav_float(val:float):
-    MAX = 100000000.0  # (sys.float_info.max- 1.0)
-    MIN = -100000000.0  # (sys.float_info.min + 1.0)
+    MAX = 1e8  # (sys.float_info.max- 1.0)
+    MIN = -1e8  # (sys.float_info.min + 1.0)
     if MIN > val > MAX:
         print("CLAMPPING!")
     return max(min(MAX, val), MIN)
@@ -169,7 +169,7 @@ class EngineGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("Jet Engine Throttle Control")
-        self.slider = QSlider(Qt.Vertical)
+        self.slider = QSlider(Qt.Vertical) # pyright: ignore[reportAttributeAccessIssue]
         self.slider.setMinimum(0)
         self.slider.setMaximum(100)
         self.slider.setValue(0)
