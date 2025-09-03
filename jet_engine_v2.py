@@ -2,6 +2,9 @@ import numpy as np
 import sys
 from PyQt5.QtWidgets import QApplication, QWidget, QSlider, QLabel, QVBoxLayout, QPushButton
 from PyQt5.QtCore import Qt, QTimer
+import multiprocessing as mp
+import multiprocessing as mp
+from sound_driver import audio_process
 
 def lav_float(val: float):
     MAX = 2.5e5
@@ -17,7 +20,7 @@ def comp_graph(x: float) -> float:
 
 def start_graph(x: float) -> float:
     x = lav_float(x)
-    return max(0, (-x)/18 + 500)
+    return max(0, (-x)/15 + 500)
 
 class BraytonCycleEngine:
     def __init__(self):
@@ -50,12 +53,12 @@ class BraytonCycleEngine:
 
         # --- Flow / map shaping helpers (model-specific “knobs”) ---
         self.pi_c_cap  = 5.0                 # [-] hard cap on π_c vs. corrected speed (prevents runaway)
-        self.mdot_gain = 2.5                 # [kg/s per (normalized speed)] mass-flow gain factor; tune to match map
+        self.mdot_gain = 3.5                 # [kg/s per (normalized speed)] mass-flow gain factor; tune to match map
 
         # --- Rotor dynamics / losses (lumped) ---
-        self.rotor_inertia        = 20.0      # [kg·m²] lumped polar moment of inertia of spool/prop/geartrain
-        self.friction_loss        = 2.0       # [N·m] constant parasitic torque (bearings, seals) at any speed
-        self.k_drag_visc          = 3.25      # [N·m per krpm] viscous torque coefficient (≈ linear in ω or small quadratic)
+        self.rotor_inertia        = 15.0      # [kg·m²] lumped polar moment of inertia of spool/prop/geartrain
+        self.friction_loss        = 1.0       # [N·m] constant parasitic torque (bearings, seals) at any speed
+        self.k_drag_visc          = 3.0      # [N·m per krpm] viscous torque coefficient (≈ linear in ω or small quadratic)
         self.tau_static           = 1.0       # [N·m] static (Coulomb) friction breakaway torque at very low RPM
         self.static_drag_cut_rpm  = 500.0     # [rpm] below this, include τ_static; above it, drop to dynamic model
 
@@ -198,7 +201,17 @@ class EngineGUI(QWidget):
         self.A5.setText(f"Drag torque: {v7:.2f} N·m")
         self.start_button.setText("Stop Starter" if self.engine.starter_active else "Start Engine")
 
+        sounds(self.engine.EngineRpm)
+
 if __name__ == "__main__":
+    rpm_queue = mp.Queue()
+    audio_proc = mp.Process(target=audio_process, args=(rpm_queue,), daemon=True)
+    audio_proc.start()
+
+    def sounds(rpm: float):
+        if not rpm_queue.full():
+            rpm_queue.put(rpm)
+
     app = QApplication(sys.argv)
     window = EngineGUI()
     sys.exit(app.exec_())
