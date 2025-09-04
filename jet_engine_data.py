@@ -3,6 +3,7 @@ import math, random
 from dataclasses import dataclass
 from typing import Iterable, List
 from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
@@ -218,30 +219,46 @@ def generate_dataset(geom: EngineGeometry,
 # --------------------------- Config (no argparse) ---------------------------
 
 def get_config() -> dict:
+    script_dir = os.path.dirname(__file__)
+    CSV = "turbine_acoustics.csv"
+    csv_path = os.path.join(script_dir, CSV)
+
     return {
-        "Zr": 16,
-        "Zs": 32,
-        "rpm_min": 2000.0,
-        "rpm_max": 20_000.0,
-        "rpm_steps": 300,
-        "K_max": 8,
-        "N_max": 3,
-        "sidebands": 2,
-        "seed": 54,
-        "out": r"D:\code stuff\AAA\py scripts\GitHub Projects\Jet Engine Sim\turbine_acoustics.csv",
-        # amplitude knobs
-        "A0_db": 100.0,
-        "rpm_ref": 8000.0,
-        "rpm_gain": 1.0,
-        "k_decay": 10.0,
-        "n_decay": 4.0,
-        "sb_decay": 6.0,
-        "jitter_db": 2.0,
-        # normalization knobs
-        "norm_mode": "rms",      # 'rms' | 'peak' | 'none'
-        "norm_target_rms": 0.2,  # used if mode='rms'
-        "norm_target_peak": 0.8, # used if mode='peak'
-        "norm_headroom_db": 6.0,
+        # -------- Geometry parameters --------
+        "Zr": 22,        # Number of rotor blades
+        "Zs": 15,        # Number of stator vanes
+
+        # -------- RPM sweep setup --------
+        "rpm_min": 1000.0,    # Minimum simulated engine speed (RPM)
+        "rpm_max": 25_000.0,  # Maximum simulated engine speed (RPM)
+        "rpm_steps": 500,     # Number of discrete RPM points between min and max
+
+        # -------- Harmonic limits --------
+        "K_max": 6,      # Maximum rotor harmonic order (k index)
+        "N_max": 5,      # Maximum stator harmonic order (n index)
+        "sidebands": 3,  # Number of sidebands around each tone to generate
+
+        # -------- Randomization --------
+        "seed": 69,  # RNG seed for reproducible jitter/noise
+
+        # -------- Output --------
+        "out": csv_path,  
+        # Path where the generated tone dataset (CSV) will be saved
+
+        # -------- Amplitude shaping knobs --------
+        "A0_db": 75.0,   # Base amplitude level in dB at reference conditions
+        "rpm_ref": 10000.0,# Reference RPM for scaling amplitude
+        "rpm_gain": 0.85,  # Gain factor for RPM-dependent amplitude scaling
+        "k_decay": 6.0,  # Exponential decay rate across rotor harmonic order k
+        "n_decay": 5.0,   # Exponential decay rate across stator harmonic order n
+        "sb_decay": 7.0,  # Exponential decay rate across sideband order
+        "jitter_db": 8.0, # Random jitter range in dB added per tone
+
+        # -------- Normalization options --------
+        "norm_mode": "rms",      # Normalization mode: 'rms' | 'peak' | 'none'
+        "norm_target_rms": 0.2,  # Target RMS amplitude if mode='rms'
+        "norm_target_peak": 0.8, # Target peak amplitude if mode='peak'
+        "norm_headroom_db": 2.0, # Extra headroom in dB to avoid clipping
     }
 
 def main():

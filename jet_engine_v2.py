@@ -16,11 +16,11 @@ def lav_float(val: float):
 
 def comp_graph(x: float) -> float:
     x = lav_float(x)
-    return ((x**1.125)/10_000)
+    return ((x**1.175)/10_000)
 
 def start_graph(x: float) -> float:
     x = lav_float(x)
-    return max(0, (-x)/15 + 500)
+    return max(0, (-x)/13 + 500)
 
 class BraytonCycleEngine:
     def __init__(self):
@@ -39,10 +39,10 @@ class BraytonCycleEngine:
 
         # NOTE: This is the compressor pressure ratio (π_c). 1.05 is essentially no compression.
         # Small turboshaft/RC microturbine: π_c ≈ 2–6. Model engines ~3–4 are common.
-        self.compression_ratio      = 3.0   # [-] compressor total-pressure ratio π_c
+        self.compression_ratio       = 2.5   # [-] compressor total-pressure ratio π_c
 
         # --- Combustor / fuel model ---
-        self.TIT_max   = 1630.0              # [K] turbine temperature limit (a.k.a. Tt4,max)
+        self.TIT_max   = 1400.0              # [K] turbine temperature limit (a.k.a. Tt4,max)
         self.fuel_LHV  = 43e6                # [J/kg] lower heating value (Jet-A/kerosene ≈ 42–43 MJ/kg)
 
         # Fuel–air ratio bounds (mass_fuel / mass_air). Stoich for kerosene ≈ 0.068.
@@ -53,13 +53,13 @@ class BraytonCycleEngine:
 
         # --- Flow / map shaping helpers (model-specific “knobs”) ---
         self.pi_c_cap  = 5.0                 # [-] hard cap on π_c vs. corrected speed (prevents runaway)
-        self.mdot_gain = 3.5                 # [kg/s per (normalized speed)] mass-flow gain factor; tune to match map
+        self.mdot_gain = 2.25                 # [kg/s per (normalized speed)] mass-flow gain factor; tune to match map
 
         # --- Rotor dynamics / losses (lumped) ---
-        self.rotor_inertia        = 15.0      # [kg·m²] lumped polar moment of inertia of spool/prop/geartrain
+        self.rotor_inertia        = 25.0      # [kg·m²] lumped polar moment of inertia of spool/prop/geartrain
         self.friction_loss        = 1.0       # [N·m] constant parasitic torque (bearings, seals) at any speed
         self.k_drag_visc          = 3.0      # [N·m per krpm] viscous torque coefficient (≈ linear in ω or small quadratic)
-        self.tau_static           = 1.0       # [N·m] static (Coulomb) friction breakaway torque at very low RPM
+        self.tau_static           = 5.0       # [N·m] static (Coulomb) friction breakaway torque at very low RPM
         self.static_drag_cut_rpm  = 500.0     # [rpm] below this, include τ_static; above it, drop to dynamic model
 
         self.starter_active = False

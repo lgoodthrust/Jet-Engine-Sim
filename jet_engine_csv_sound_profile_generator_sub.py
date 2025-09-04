@@ -40,6 +40,92 @@ class ToneProfile:
     def amp_lin(self, rpm: float) -> float:
         return float(db_to_lin(self.amp_db(rpm)))
 
+# reverb
+    
+class DampedComb:
+    def __init__(self, delay_samples: int, fs: float):
+        self.n = int(max(2, delay_samples))
+        self.buf = np.zeros(self.n, dtype=np.float64)
+        self.widx = 0
+        self.lp_state = 0.0
+        self.fs = fs
+
+    def process(self, x: np.ndarray, feedback: float, damp: float) -> np.ndarray:
+        y = np.empty_like(x)
+        d  = float(np.clip(damp, 0.0, 1.0))
+        fb = float(np.clip(feedback, 0.0, 0.9995))
+        for i in range(x.shape[0]):
+            r = self.buf[self.widx]
+            self.lp_state = (1.0 - d) * r + d * self.lp_state  # simple 1-pole lowpass in the loop
+            y[i] = r
+            self.buf[self.widx] = x[i] + fb * self.lp_state
+            self.widx += 1
+            if self.widx >= self.n:
+                self.widx = 0
+        return y
+
+class Allpass:
+    def __init__(self, delay_samples: int, gain: float):
+        self.n = int(max(2, delay_samples))
+        self.buf = np.zeros(self.n, dtype=np.float64)
+        self.widx = 0
+        self.g = float(gain)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        y = np.empty_like(x)
+        g = self.g
+        for i in range(x.shape[0]):
+            bufout = self.buf[self.widx]
+            v = x[i] + (-g) * bufout
+            y[i] = bufout + g * v
+            self.buf[self.widx] = v
+            self.widx += 1
+            if self.widx >= self.n:
+                self.widx = 0
+        return y
+    
+class SchroederReverb:
+    """
+    4 parallel damped combs + 2 series allpasses.
+    - room controls comb feedback (0..1 ~ 0.2..0.92)
+    - damp is the lowpass in the feedback path (0=bright, 1=dark)
+    - wet is output mix (0..1)
+    Delays are prime-ish and scaled for fs.
+    """
+    def __init__(self, fs: int, wet: float = 0.18, room: float = 0.80, damp: float = 0.45):
+        self.fs = int(fs)
+        self.set_params(wet=wet, room=room, damp=damp)
+
+        # ~48 kHz reference delays (ms). Scales if fs != 48k.
+        comb_ms = [29.7, 37.1, 41.1, 43.7]
+        ap_ms   = [5.0, 1.7]
+
+        def ms_to_samp(ms): return max(2, int(round(self.fs * ms / 1000.0)))
+        self.combs = [DampedComb(ms_to_samp(ms), fs=self.fs) for ms in comb_ms]
+        self.ap1 = Allpass(ms_to_samp(ap_ms[0]), gain=0.7)
+        self.ap2 = Allpass(ms_to_samp(ap_ms[1]), gain=0.7)
+
+    def set_params(self, wet: float = 0, room: float = 0, damp: float = 0):
+        if wet  is not None:  self.wet  = float(np.clip(wet,  0.0, 1.0))
+        if room is not None:  self.room = float(np.clip(room, 0.0, 1.0))
+        if damp is not None:  self.damp = float(np.clip(damp, 0.0, 1.0))
+        # map room -> feedback in musically sane range
+        self.feedback = 0.2 + 0.72 * self.room  # ~0.2..0.92
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        if self.wet <= 1e-6:
+            return x  # bypass
+        # parallel combs
+        s = np.zeros_like(x, dtype=np.float64)
+        for c in self.combs:
+            s += c.process(x, feedback=self.feedback, damp=self.damp)
+        s *= (1.0 / len(self.combs))
+        # diffusion allpasses
+        s = self.ap1.process(s)
+        s = self.ap2.process(s)
+        # wet/dry
+        return (1.0 - self.wet) * x + self.wet * s
+
 # ============================ Lightweight biquad ============================
 
 class Biquad:
@@ -274,6 +360,9 @@ class EngineSynth:
                  out_hpf_hz: float = 18.0,
                  k_onset_rpm_per_order: float = 250.0,
                  ts_extra_onset_rpm: float = 150.0,
+                 reverb_wet: float = 0.18,
+                 reverb_room: float = 0.80,
+                 reverb_damp: float = 0.45,
                  ):
         self.bank = bank
         self.fs = int(samplerate)
@@ -307,6 +396,13 @@ class EngineSynth:
         # Noise & output filters
         self.noise = NoiseBed(self.fs, hp_hz=out_hpf_hz)
         self.out_hpf = Biquad(); self.out_hpf.set_highpass(self.fs, out_hpf_hz, Q=0.707)
+
+        self.reverb = SchroederReverb(
+            fs=self.fs,
+            wet=reverb_wet,
+            room=reverb_room,
+            damp=reverb_damp
+        )
 
         # Stream
         self.stream = sd.OutputStream(
@@ -405,11 +501,13 @@ class EngineSynth:
 
         # 6) Noise bed (formant ~ 0.8*BPF)
         bpf = self.bank.bpf(rpm)
-        self.noise.update_formant(center_hz=max(60.0, 0.8*bpf),
-                                  Q=1.0, gain_db=6.0)
+        self.noise.update_formant(center_hz=max(60.0, 0.8*bpf), Q=1.0, gain_db=6.0)
         noise_block = self.noise.render(frames, tilt_mix=0.3)
         noise_gain = self._noise_gain_for_rpm(rpm)
         chunk = tones + noise_gain * noise_block
+        
+        # add a lil reverb
+        chunk = self.reverb.process(chunk.astype(np.float64, copy=False))
 
         # 7) Update states
         new_phase = (phase + omega * frames) % (2.0 * np.pi)
@@ -431,38 +529,10 @@ class EngineSynth:
 
 def load_tone_bank(csv_path: str | Path) -> ToneBank:
     df = pd.read_csv(csv_path)
-    return ToneBank(df,
-                    rng_seed=1337,
-                    detune_cents=18.0,
-                    onset_rel_db=-30.0,   # consider -35..-25
-                    fade_width_frac=0.03, # 3% of rpm span
-                    fade_min_rpm=120.0)
-
-def main(rpm:float):
-    CSV_PATH   = r"D:\code stuff\AAA\py scripts\GitHub Projects\Jet Engine Sim\turbine_acoustics.csv"
-    SR         = 48_000
-    BUF_MS     = 100.0
-    GAIN       = 0.15
-    MAX_TONES  = 255
-    AMP_SLEW   = 4.0
-
-    # Build + run
-    bank = load_tone_bank(CSV_PATH)
-    print(f"Starting v2.1 @ {SR} Hz, ~{BUF_MS:.0f} ms blocks, max_tones={MAX_TONES}")
-    with EngineSynth(bank,
-                     samplerate=SR,
-                     buffer_ms=BUF_MS,
-                     gain=GAIN,
-                     max_active_tones=MAX_TONES,
-                     amp_slew_per_block_db=AMP_SLEW,
-                     spectral_tilt_per_k_db=0.25,
-                     rotor_db_trim=-5.0,
-                     ts_db_trim=-7.0,
-                     noise_db_at_idle=-18.0,
-                     noise_db_at_max=-8.0,
-                     rpm_smooth_tau_blocks=1.5,
-                     out_hpf_hz=25.0,
-                     k_onset_rpm_per_order=250.0,
-                     ts_extra_onset_rpm=1200.0
-                     ) as synth:
-        synth.set_rpm(rpm)
+    return ToneBank(
+        df,                       # DataFrame containing tone definitions (freqs, amps vs RPM)
+        rng_seed=6969,            # RNG seed for reproducible randomization (detuning, jitter)
+        detune_cents=18.0,        # Random pitch detuning range in cents (±18 cents ≈ ±1.5%)
+        onset_rel_db=-35.0,       # Relative amplitude threshold (dB below peak) where tones fade in
+        fade_width_frac=0.08,     # Fraction of total RPM span used for fade-in/out blending (3%)
+        fade_min_rpm=500.0)       # Minimum RPM below which tones are fully suppressed
