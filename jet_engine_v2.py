@@ -16,7 +16,7 @@ def lav_float(val: float):
 
 def comp_graph(x: float) -> float:
     x = lav_float(x)
-    return ((x**1.175)/10_000)
+    return ((x**1.185)/10_000)
 
 def start_graph(x: float) -> float:
     x = lav_float(x)
@@ -53,13 +53,13 @@ class BraytonCycleEngine:
 
         # --- Flow / map shaping helpers (model-specific “knobs”) ---
         self.pi_c_cap  = 5.0                 # [-] hard cap on π_c vs. corrected speed (prevents runaway)
-        self.mdot_gain = 2.25                 # [kg/s per (normalized speed)] mass-flow gain factor; tune to match map
+        self.mdot_gain = 2.0                 # [kg/s per (normalized speed)] mass-flow gain factor; tune to match map
 
         # --- Rotor dynamics / losses (lumped) ---
-        self.rotor_inertia        = 25.0      # [kg·m²] lumped polar moment of inertia of spool/prop/geartrain
+        self.rotor_inertia        = 20.0      # [kg·m²] lumped polar moment of inertia of spool/prop/geartrain
         self.friction_loss        = 1.0       # [N·m] constant parasitic torque (bearings, seals) at any speed
         self.k_drag_visc          = 3.0      # [N·m per krpm] viscous torque coefficient (≈ linear in ω or small quadratic)
-        self.tau_static           = 5.0       # [N·m] static (Coulomb) friction breakaway torque at very low RPM
+        self.tau_static           = 25.0       # [N·m] static (Coulomb) friction breakaway torque at very low RPM
         self.static_drag_cut_rpm  = 500.0     # [rpm] below this, include τ_static; above it, drop to dynamic model
 
         self.starter_active = False
@@ -92,7 +92,7 @@ class BraytonCycleEngine:
         return self.T2
 
     def combustor(self):
-        if self.throttle <= 0.0 and self.EngineRpm > 800.0:
+        if self.throttle <= 0.0 and self.EngineRpm > self.static_drag_cut_rpm:
             f = self.f_idle
         else:
             f = 0.01 + 0.05 * self.throttle

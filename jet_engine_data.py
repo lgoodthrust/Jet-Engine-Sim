@@ -64,6 +64,38 @@ class AmplitudeParams:
     clamp_min_db: float = 20.0
     clamp_max_db: float = 150.0
 
+    # --- NEW: onset shaping (smooth fade-in with RPM) ---
+    onset_depth_db: float = 30.0          # attenuation at very low RPM (e.g., -30 dB)
+    k_onset_rpm_per_order: float = 250.0  # onset shifts later with higher k
+    ts_extra_onset_rpm: float = 150.0     # TS (n>0) wake up later than rotor-only
+    onset_softness_rpm: float = 150.0     # larger = softer transition
+
+    # --- NEW: spectral tilt (e.g., -3 dB per octave above ref) ---
+    tilt_db_per_oct: float = -3.0
+    tilt_ref_hz: float = 200.0
+    tilt_min_db: float = -24.0
+    tilt_max_db: float = 12.0
+
+def _spectral_tilt_db(f_hz: float, P: AmplitudeParams) -> float:
+    f = max(1e-6, f_hz)
+    ref = max(1.0, P.tilt_ref_hz)
+    octaves = math.log2(f / ref)
+    tilt = P.tilt_db_per_oct * octaves
+    # clamp the tilt contribution so extreme highs/lows don't run away
+    return float(np.clip(tilt, P.tilt_min_db, P.tilt_max_db))
+
+def _onset_fade_db(rpm: float, idx: ToneIndex, P: AmplitudeParams) -> float:
+    """
+    Logistic fade from -onset_depth_db at low RPM to 0 dB at high RPM.
+    """
+    base_onset = P.k_onset_rpm_per_order * max(1, idx.k)
+    if idx.n > 0:  # TS families (n>0) fade in later
+        base_onset += P.ts_extra_onset_rpm
+
+    x = (rpm - base_onset) / max(1.0, P.onset_softness_rpm)
+    s = 1.0 / (1.0 + math.exp(-x))
+    return -P.onset_depth_db * (1.0 - s)
+
 def synth_amplitude_db(op: OperatingPoint,
                        geom: EngineGeometry,
                        idx: ToneIndex,
@@ -75,8 +107,15 @@ def synth_amplitude_db(op: OperatingPoint,
     sb_term = P.sideband_decay_db * (idx.s if idx.s > 0 else 0)
     fam_bias = 0.6 if idx.family == '+' else 0.0
     jitter = random.gauss(0.0, P.jitter_db)
-    A = base - k_term - n_term - sb_term + fam_bias + jitter
+
+    onset_db = _onset_fade_db(op.rpm, idx, P)
+    f = tone_frequency_hz(op, geom, idx)
+    tilt_db = _spectral_tilt_db(f, P) if P.tilt_db_per_oct != 0.0 else 0.0
+
+    A = base - k_term - n_term - sb_term + fam_bias + jitter + onset_db + tilt_db
     return float(np.clip(A, P.clamp_min_db, P.clamp_max_db))
+
+
 
 # --------------------------- Normalization ---------------------------
 
@@ -102,41 +141,33 @@ def db_to_lin(db: np.ndarray) -> np.ndarray:
 
 def apply_per_rpm_normalization(df: pd.DataFrame, cfg: NormalizationConfig) -> pd.DataFrame:
     df = df.copy()
-    df["amp_rel"] = db_to_lin(df["amplitude_db"].to_numpy())
 
-    # ----- compute per-RPM scale vectorized -----
-    g = df.groupby("rpm")
+    # Work in float32 for the per-row arrays; keep denom in float64 for stability.
+    amp_rel = db_to_lin(df["amplitude_db"].to_numpy(np.float64)).astype(np.float32)
+    df["_amp_rel"] = amp_rel
 
     if cfg.mode == "none":
-        denom = 1.0
-        scale = np.full(len(df), 1.0, dtype=float)
+        scale = np.ones(len(df), dtype=np.float32)
 
     elif cfg.mode == "peak":
-        # worst-case in-phase: sum of amplitudes
-        denom = g["amp_rel"].transform("sum").to_numpy() + EPS
-        target = cfg.target_peak
-
-        scale = (target / denom)
-        # headroom pad
+        sum_abs = df.groupby("rpm")["_amp_rel"].transform("sum").to_numpy(np.float64)
+        denom = sum_abs + EPS
+        scale = (cfg.target_peak / denom)
         scale *= 10.0 ** (-cfg.headroom_db / 20.0)
-        scale = np.clip(scale, 0.0, 1.0)
+        scale = np.clip(scale, 0.0, 1.0).astype(np.float32)
 
     elif cfg.mode == "rms":
-        # uncorrelated RMS of sum: sqrt(sum(a^2)/2)
-        # 1) sum of squares per group
-        sumsq = g["amp_rel"].transform(lambda s: float(np.sum(s.values**2)))
-        denom = np.sqrt(sumsq.to_numpy() / 2.0) + EPS
-        target = cfg.target_rms
-
-        scale = (target / denom)
+        df["_amp2"] = (df["_amp_rel"] * df["_amp_rel"]).astype(np.float32)
+        sumsq = df.groupby("rpm")["_amp2"].transform("sum").to_numpy(np.float64)
+        denom = np.sqrt(sumsq / 2.0) + EPS
+        scale = (cfg.target_rms / denom)
         scale *= 10.0 ** (-cfg.headroom_db / 20.0)
-        scale = np.clip(scale, 0.0, 1.0)
+        scale = np.clip(scale, 0.0, 1.0).astype(np.float32)
 
     else:
         raise ValueError("NormalizationConfig.mode must be 'rms', 'peak', or 'none'.")
 
-    # ----- apply scale per row -----
-    amp_lin = df["amp_rel"].to_numpy() * scale
+    amp_lin = (df["_amp_rel"] * scale).astype(np.float32)
     amp_lin = np.minimum(1.0, amp_lin)
     amp_dbfs = 20.0 * np.log10(np.maximum(EPS, amp_lin))
     amp_dbfs = np.maximum(cfg.dbfs_floor, amp_dbfs)
@@ -145,6 +176,12 @@ def apply_per_rpm_normalization(df: pd.DataFrame, cfg: NormalizationConfig) -> p
     df["amplitude_dbfs"] = amp_dbfs
     df["rpm_norm_scale"] = scale
     df["rpm_norm_mode"]  = cfg.mode
+
+    # cleanup
+    for col in ("_amp_rel", "_amp2"):
+        if col in df:
+            del df[col]
+
     return df
 
 # --------------------------- Dataset generation ---------------------------
@@ -173,10 +210,19 @@ def generate_dataset(geom: EngineGeometry,
                      sidebands: int = 1,
                      amp_params: AmplitudeParams = AmplitudeParams(),
                      norm_cfg: NormalizationConfig = NormalizationConfig(),
+                     fs: float | None = None,
+                     nyquist_frac: float | None = None,
                      seed: int = 42) -> pd.DataFrame:
+
     random.seed(seed)
     rows: List[dict] = []
-    indices = list(generate_indices(K_max=K_max, N_max=N_max, sidebands=sidebands, include_rotor_only=True))
+    indices = list(generate_indices(K_max=K_max, N_max=N_max,
+                                    sidebands=sidebands,
+                                    include_rotor_only=True))
+
+    cutoff_hz = None
+    if fs is not None and nyquist_frac is not None:
+        cutoff_hz = 0.5 * fs * nyquist_frac
 
     for rpm in rpms:
         op = OperatingPoint(rpm=rpm)
@@ -185,6 +231,8 @@ def generate_dataset(geom: EngineGeometry,
         for idx in indices:
             f = tone_frequency_hz(op, geom, idx)
             if f <= 0.0:
+                continue
+            if cutoff_hz is not None and f >= cutoff_hz:
                 continue
             m = tyler_sofrin_mode_m(idx.k, idx.n, idx.family, geom.Zr, geom.Zs)
             A_db = synth_amplitude_db(op, geom, idx, amp_params)
@@ -204,7 +252,7 @@ def generate_dataset(geom: EngineGeometry,
                 "sideband_sign": idx.sideband_sign,
                 "sideband_label": sb_lbl,
                 "frequency_hz": f,
-                "amplitude_db": A_db,   # modeled RELATIVE dB (not dBFS!)
+                "amplitude_db": A_db,
                 "component": label,
             })
 
@@ -212,7 +260,6 @@ def generate_dataset(geom: EngineGeometry,
         ["rpm", "frequency_hz", "k", "n", "family", "sideband_order", "sideband_sign"]
     ).reset_index(drop=True)
 
-    # <<< NEW: keep the mix under control per RPM slice >>>
     df = apply_per_rpm_normalization(df, norm_cfg)
     return df
 
@@ -247,7 +294,7 @@ def get_config() -> dict:
 
         # -------- Amplitude shaping knobs --------
         "A0_db": 75.0,   # Base amplitude level in dB at reference conditions
-        "rpm_ref": 10000.0,# Reference RPM for scaling amplitude
+        "rpm_ref": 5000.0,# Reference RPM for scaling amplitude
         "rpm_gain": 0.85,  # Gain factor for RPM-dependent amplitude scaling
         "k_decay": 6.0,  # Exponential decay rate across rotor harmonic order k
         "n_decay": 5.0,   # Exponential decay rate across stator harmonic order n
@@ -259,6 +306,15 @@ def get_config() -> dict:
         "norm_target_rms": 0.2,  # Target RMS amplitude if mode='rms'
         "norm_target_peak": 0.8, # Target peak amplitude if mode='peak'
         "norm_headroom_db": 2.0, # Extra headroom in dB to avoid clipping
+
+        "tilt_db_per_oct": -3.0,
+        "tilt_ref_hz": 200.0,
+        "tilt_min_db": -24.0,
+        "tilt_max_db": 12.0,
+
+        # frequency limiter
+        "fs": 48_000.0,         # sample rate for your synth
+        "nyquist_frac": 0.45,   # keep tones below this * Nyquist (0.5*fs)
     }
 
 def main():
@@ -273,13 +329,23 @@ def main():
     rpms = np.linspace(args["rpm_min"], args["rpm_max"], num=int(args["rpm_steps"]), endpoint=True).round(6).tolist()
 
     amp_params = AmplitudeParams(
-        A0_db=args["A0_db"],
-        rpm_ref=args["rpm_ref"],
-        rpm_gain_db_per_20log=args["rpm_gain"],
-        k_decay_db_per_order=args["k_decay"],
-        n_decay_db=args["n_decay"],
-        sideband_decay_db=args["sb_decay"],
-        jitter_db=args["jitter_db"],
+        A0_db=args.get("A0_db", 75.0),
+        rpm_ref=args.get("rpm_ref", 10000.0),
+        rpm_gain_db_per_20log=args.get("rpm_gain", 0.85),
+        k_decay_db_per_order=args.get("k_decay", 6.0),
+        n_decay_db=args.get("n_decay", 5.0),
+        sideband_decay_db=args.get("sb_decay", 7.0),
+        jitter_db=args.get("jitter_db", 8.0),
+
+        onset_depth_db=args.get("onset_depth_db", 30.0),
+        k_onset_rpm_per_order=args.get("k_onset_rpm_per_order", 250.0),
+        ts_extra_onset_rpm=args.get("ts_extra_onset_rpm", 150.0),
+        onset_softness_rpm=args.get("onset_softness_rpm", 150.0),
+
+        tilt_db_per_oct=args.get("tilt_db_per_oct", -3.0),
+        tilt_ref_hz=args.get("tilt_ref_hz", 200.0),
+        tilt_min_db=args.get("tilt_min_db", -24.0),
+        tilt_max_db=args.get("tilt_max_db", 12.0),
     )
 
     norm_cfg = NormalizationConfig(
@@ -288,6 +354,7 @@ def main():
         target_peak=args["norm_target_peak"],
         headroom_db=args["norm_headroom_db"],
     )
+    
 
     tones_per_rpm = args["K_max"] * (1 + 2*args["sidebands"]) + (2*args["N_max"]) * (1 + 2*args["sidebands"]) * args["K_max"]
     est_rows = int(tones_per_rpm * len(rpms))
@@ -302,6 +369,8 @@ def main():
         amp_params=amp_params,
         norm_cfg=norm_cfg,
         seed=args["seed"],
+        fs=args.get("fs", None),
+        nyquist_frac=args.get("nyquist_frac", None),
     )
 
     out_path = Path(args["out"])

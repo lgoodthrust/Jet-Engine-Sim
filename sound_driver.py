@@ -17,13 +17,13 @@ def audio_process(rpm_queue: mp.Queue):
                     max_active_tones=512,      # Maximum number of tones simultaneously synthesized
 
                     # -------- Amplitude / spectral shaping --------
-                    amp_slew_per_block_db=3.0, # Max amplitude change (dB) per audio block, smooths fast jumps
+                    amp_slew_per_block_db=0.5, # Max amplitude change (dB) per audio block, smooths fast jumps
                     spectral_tilt_per_k_db=0.25, # Additional roll-off in dB per rotor harmonic order k
                     rotor_db_trim=-1.0,         # Gain trim (dB) applied to rotor tones
                     ts_db_trim=-2.0,           # Gain trim (dB) applied to tone–stator interaction components
 
                     # -------- Broadband noise shaping --------
-                    noise_db_at_idle=-5.0,    # Broadband noise floor (dB) at idle RPM
+                    noise_db_at_idle=-20.0,    # Broadband noise floor (dB) at idle RPM
                     noise_db_at_max=-1.0,      # Broadband noise floor (dB) at max RPM
 
                     # -------- RPM dynamics --------
@@ -35,7 +35,7 @@ def audio_process(rpm_queue: mp.Queue):
                     ts_extra_onset_rpm=150.0,    # Extra RPM threshold for tone–stator harmonics
 
                     # reverbs
-                    reverb_wet=0.35,     # overall reverb mix
+                    reverb_wet=0.25,     # overall reverb mix
                     reverb_room=0.05,    # longer tails
                     reverb_damp=0.75     # darker tail (higher = darker)
         ) as synth:
